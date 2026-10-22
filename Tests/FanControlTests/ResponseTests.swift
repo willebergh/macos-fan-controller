@@ -5,16 +5,6 @@ final class ResponseTests: XCTestCase {
     private func fan(_ rpm: Double, manual: Bool = true) -> FanReading {
         FanReading(id: 0, rpm: rpm, minimum: 1000, maximum: 4900, manual: manual)
     }
-    func testMaximumCoolingIsAllowedWhenHot() {
-        XCTAssertTrue(FanSafetyPolicy.permits(percent: 100, temperatures: [99, 78]))
-        XCTAssertFalse(FanSafetyPolicy.permits(percent: 50, temperatures: [99, 78]))
-        XCTAssertTrue(FanSafetyPolicy.permits(percent: 50, temperatures: [65, 70]))
-    }
-    func testMaximumStillRequiresValidTelemetry() {
-        XCTAssertFalse(FanSafetyPolicy.permits(percent: 100, temperatures: []))
-        XCTAssertFalse(FanSafetyPolicy.permits(percent: 100, temperatures: [.nan]))
-        XCTAssertFalse(FanSafetyPolicy.permits(percent: 100, temperatures: [160]))
-    }
     func testIgnoredMaximumRequestIsDetected() {
         let check = FanResponseMonitor(startedAt: 0, initial: [fan(1022)], percent: 100)
         XCTAssertEqual(check.evaluate([fan(1022)], now: 2), .waiting)

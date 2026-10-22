@@ -32,8 +32,6 @@ enum PrivilegedHelper {
         var lastContact = ProcessInfo.processInfo.systemUptime
         var lastManual = lastContact
         var shouldExit = false
-        var lastSafetyCheck = 0.0
-        var requestedPercent = 100.0
         var clients: [pid_t: UInt64] = [:]
         // poll() bounds idle time and ensures the watchdog runs without a connected app.
         while !shouldExit {
@@ -41,13 +39,9 @@ enum PrivilegedHelper {
             let ready = poll(&descriptor, 1, 500)
             let now = ProcessInfo.processInfo.systemUptime
             if manual {
-                var unsafe = now - lastManual > 10
-                if now - lastSafetyCheck > 2 {
-                    let temperatures = try? smc.safetyTemperatures()
-                    unsafe = unsafe || !FanSafetyPolicy.permits(percent: requestedPercent, temperatures: temperatures ?? [])
-                    lastSafetyCheck = now
-                }
-                if unsafe {
+                // Temperature telemetry is display-only; only a lost manual
+                // heartbeat revokes an otherwise active override.
+                if now - lastManual > 10 {
                     lease = nil
                     do { try smc.reset(); manual = false }
                     catch { fputs("Fan reset failed: \(error.localizedDescription)\n", stderr) }
@@ -73,8 +67,17 @@ enum PrivilegedHelper {
                 let command = String(decoding: buffer.prefix(count), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
                 lastContact = now
                 do {
-                    if command == "ping" || command == "session 2" { reply = "OK" }
-                    else if command == "system" || command == "quit" {
+                    if command == "ping" || command == "session 4" { reply = "OK" }
+                    else if command.hasPrefix("release ") {
+                        let token = String(command.dropFirst(8))
+                        guard UUID(uuidString: token) != nil else { throw FanError("Invalid lease.") }
+                        // A stale MCP connection must never reset another owner's override.
+                        if lease == token {
+                            lease = nil
+                            try smc.reset(); manual = false
+                        }
+                        reply = "OK"
+                    } else if command == "system" || command == "quit" {
                         lease = nil
                         try smc.reset(); manual = false; reply = "OK"
                         shouldExit = command == "quit"
@@ -88,18 +91,6 @@ enum PrivilegedHelper {
                             guard manual, lease == token else { throw FanError("Manual control ended. Move the slider to start it again.") }
                         } else if let owner = lease, owner != token {
                             throw FanError("Another FanControl instance owns manual control.")
-                        }
-                        let temperatures: [Double]
-                        do { temperatures = try smc.safetyTemperatures() }
-                        catch {
-                            lease = nil
-                            try smc.reset(); manual = false
-                            throw error
-                        }
-                        guard FanSafetyPolicy.permits(percent: percent, temperatures: temperatures) else {
-                            lease = nil
-                            try smc.reset(); manual = false
-                            throw FanError("Manual request not applied: a core is at least 95 °C. Choose 100% for maximum cooling or use system default.")
                         }
                         lease = token
                         // Mark ownership before attempting any writes, so a partial write + reset
@@ -115,7 +106,6 @@ enum PrivilegedHelper {
                             catch { throw FanError("\(originalError.localizedDescription) System reset also failed: \(error.localizedDescription)") }
                             throw originalError
                         }
-                        requestedPercent = percent
                         lastManual = ProcessInfo.processInfo.systemUptime
                         reply = "OK"
                     }
@@ -131,15 +121,6 @@ enum PrivilegedHelper {
 enum HelperLifetime {
     static func shouldExit(manual: Bool, hasLiveClients: Bool, idleSeconds: TimeInterval) -> Bool {
         !manual && !hasLiveClients && idleSeconds > 60
-    }
-}
-
-enum FanSafetyPolicy {
-    static func permits(percent: Double, temperatures: [Double]) -> Bool {
-        guard percent.isFinite, (0...100).contains(percent), !temperatures.isEmpty,
-              temperatures.allSatisfy({ $0.isFinite && $0 > 0 && $0 < 150 }) else { return false }
-        // Maximum cooling must remain available precisely when the chip is hot.
-        return percent == 100 || temperatures.allSatisfy { $0 < 95 }
     }
 }
 

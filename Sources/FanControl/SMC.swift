@@ -73,6 +73,7 @@ struct TemperatureReading: Identifiable {
 struct Snapshot {
     var fans: [FanReading] = []
     var temperatures: [TemperatureReading] = []
+    var systemPowerWatts: Double? = nil
 }
 
 final class SMC {
@@ -81,9 +82,7 @@ final class SMC {
     private var injectedWrite: ((String, [UInt8]) throws -> Void)?
     private var unlockedTestMode = false
     private var temperatureKeys: [String]?
-    private var safetyKeys: [String]?
     private var ownedModeKeys: [Int: String] = [:]
-    private static let coreKeys = ["Te05", "Te0S", "Te09", "Te0H", "Tp01", "Tp05", "Tp09", "Tp0D", "Tp0H", "Tp0T", "Tg0G", "Tg0H", "Tg05", "Tg0D", "Tg0L", "Tg0T", "Ts0P", "Ts0S"]
 
     init() throws {
         let result = smc_open(&connection)
@@ -177,33 +176,14 @@ final class SMC {
         return result
     }
 
-    // Safety telemetry is independent of display summaries. Once a sensor was
-    // available, a failed/invalid reading fails closed instead of disappearing.
-    func safetyTemperatures() throws -> [Double] {
-        if safetyKeys == nil {
-            var discovered: [String] = []
-            for key in Self.coreKeys {
-                do { _ = try read(key); discovered.append(key) }
-                catch let error as FanError where error.code == 0xE0000084 {
-                    continue // Firmware explicitly says this key does not exist.
-                }
-                // Permission, transport and other failures are not unsupported keys.
-            }
-            guard discovered.contains(where: { $0.hasPrefix("Tp") || $0.hasPrefix("Te") }),
-                  discovered.contains(where: { $0.hasPrefix("Tg") }) else {
-                throw FanError("Validated CPU and GPU temperature coverage is required for manual control.")
-            }
-            safetyKeys = discovered
-        }
-        guard let keys = safetyKeys, !keys.isEmpty else { throw FanError("No validated temperature sensors are available.") }
-        return try keys.map { key in
-            let value = try number(key)
-            guard value > 0, value < 150 else { throw FanError("Invalid temperature from \(key).") }
-            return value
-        }
+    func systemPower() -> Double? {
+        guard let watts = try? number("PSTR"), watts.isFinite, watts >= 0 else { return nil }
+        return watts
     }
 
-    func snapshot() throws -> Snapshot { try Snapshot(fans: fans(), temperatures: temperatures()) }
+    func snapshot() throws -> Snapshot {
+        try Snapshot(fans: fans(), temperatures: temperatures(), systemPowerWatts: systemPower())
+    }
 
     func setManual(percent: Double) throws {
         guard percent.isFinite, (0...100).contains(percent) else { throw FanError("Percentage must be 0–100.") }

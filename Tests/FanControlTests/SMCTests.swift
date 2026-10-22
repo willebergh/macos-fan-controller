@@ -44,6 +44,27 @@ final class SMCTests: XCTestCase {
         XCTAssertThrowsError(try value.encoding(.nan))
         XCTAssertThrowsError(try value.encoding(20000))
     }
+    func testSystemPower() throws {
+        let value = SMCValue(type: "flt ", bytes: [0, 0, 0, 0])
+        let bytes = try value.encoding(49.5)
+        let smc = SMC(read: { key in
+            XCTAssertEqual(key, "PSTR")
+            return SMCValue(type: "flt ", bytes: bytes)
+        }, write: { _, _ in XCTFail("Power readings must be read-only") })
+        XCTAssertEqual(smc.systemPower(), 49.5)
+    }
+
+    func testSystemPowerUnavailableOrInvalid() {
+        let missing = SMC(read: { _ in throw FanError("Unavailable") }, write: { _, _ in })
+        XCTAssertNil(missing.systemPower())
+        for bytes: [UInt8] in [[0, 0, 128, 191], [0, 0, 128, 127], [0]] {
+            let smc = SMC(read: { _ in SMCValue(type: "flt ", bytes: bytes) }, write: { _, _ in })
+            XCTAssertNil(smc.systemPower())
+        }
+        let zero = SMC(read: { _ in SMCValue(type: "flt ", bytes: [0, 0, 0, 0]) }, write: { _, _ in })
+        XCTAssertEqual(zero.systemPower(), 0)
+    }
+
     func testShellQuoting() {
         XCTAssertEqual(shellQuote("a'b"), "'a'\\''b'")
         XCTAssertEqual(appleScriptQuote("a\"b\\c"), "\"a\\\"b\\\\c\"")

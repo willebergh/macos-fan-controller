@@ -66,8 +66,8 @@ final class AppModel: ObservableObject {
                     do { _ = try PrivilegedHelper.request("heartbeat \(self.hardware.lease) \(percent)") }
                     catch { controlFailure = error.localizedDescription }
                 } else {
-                    // Renew an existing authorization session even after a thermal
-                    // reset or a switch to system mode. Never launch/authorize here.
+                    // Renew an existing authorization session even after a switch
+                    // to system mode. Never launch/authorize here.
                     // Ping does NOT renew the manual watchdog's lastManual timestamp.
                     _ = try? PrivilegedHelper.request("ping")
                 }
@@ -170,14 +170,19 @@ final class AppModel: ObservableObject {
             do {
                 let alreadySystem = (try? self.hardware.smc?.fans().allSatisfy { $0.manual == false }) == true
                 let helper = (try? PrivilegedHelper.request("ping")) != nil
-                if helper {
+                if reason != nil {
+                    // Automatic recovery must not revoke a newer MCP/GUI owner's
+                    // lease after our heartbeat discovers a stale session.
+                    guard helper else { throw FanError("Helper unavailable; its watchdog will attempt recovery.") }
+                    _ = try PrivilegedHelper.request("release \(self.hardware.lease)")
+                } else if helper {
                     _ = try PrivilegedHelper.request(quit ? "quit" : "system")
                 } else if !alreadySystem {
                     try self.hardware.authorize()
                     _ = try PrivilegedHelper.request(quit ? "quit" : "system")
                 }
                 Task { @MainActor in
-                    self.isManual = false; self.error = reason.map { $0 + " System control restored." }; self.busy = false; self.resetting = false
+                    self.isManual = false; self.error = reason.map { $0 + " Manual session ended." }; self.busy = false; self.resetting = false
                     self.refresh()
                     if quit { NSApp.terminate(nil) }
                 }
@@ -197,9 +202,9 @@ final class HardwareController: @unchecked Sendable {
     let lease = UUID().uuidString
 
     func authorize() throws {
-        if (try? PrivilegedHelper.request("session 2")) != nil { return }
-        // Replace pre-session-lifetime helpers once, rather than silently reusing
-        // the old short-idle implementation after an app update.
+        if (try? PrivilegedHelper.request("session 4")) != nil { return }
+        // Replace older helpers to require current lease-release semantics and
+        // avoid retaining an old thermal cutoff after an app update.
         if (try? PrivilegedHelper.request("ping")) != nil {
             _ = try PrivilegedHelper.request("quit")
         }

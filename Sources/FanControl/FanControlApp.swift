@@ -9,6 +9,9 @@ struct FanControlApp {
                 guard CommandLine.arguments.count == 3, let uid = UInt32(CommandLine.arguments[2]) else { throw FanError("Invalid helper arguments.") }
                 try PrivilegedHelper.run(uid: uid)
             } catch { fputs("\(error.localizedDescription)\n", stderr); exit(1) }
+        } else if CommandLine.arguments.contains("--mcp") {
+            do { try MCPServer.run() }
+            catch { fputs("\(error.localizedDescription)\n", stderr); exit(1) }
         } else if CommandLine.arguments.contains("--test-control") {
             do { try ControlDiagnostic.run() }
             catch { fputs("\(error.localizedDescription)\n", stderr); exit(1) }
@@ -20,10 +23,6 @@ struct FanControlApp {
                     print("Fan \(fan.id + 1): \(Int(fan.rpm)) RPM; limits \(Int(fan.minimum))–\(Int(fan.maximum)); manual: \(fan.manual.map(String.init) ?? "unknown")")
                 }
                 for temp in snapshot.temperatures { print("\(temp.name) [\(temp.id)]: \(String(format: "%.1f", temp.celsius)) °C") }
-                do {
-                    let safety = try smc.safetyTemperatures()
-                    print("Safety sensors: \(safety.count) validated; hottest \(String(format: "%.1f", safety.max()!)) °C")
-                } catch { print("Manual control unavailable: \(error.localizedDescription)") }
             } catch { fputs("\(error.localizedDescription)\n", stderr); exit(1) }
         } else {
             let application = NSApplication.shared
@@ -41,18 +40,57 @@ private final class StatusReadoutView: NSView {
         didSet { needsDisplay = true }
     }
 
+    var powerText = NSAttributedString() {
+        didSet { needsDisplay = true }
+    }
+
     override var isFlipped: Bool { false }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
     override func draw(_ dirtyRect: NSRect) {
-        let size = text.boundingRect(with: NSSize(width: bounds.width, height: .greatestFiniteMagnitude),
+        let columnWidth = ceil(text.size().width)
+        let size = text.boundingRect(with: NSSize(width: columnWidth, height: .greatestFiniteMagnitude),
                                      options: [.usesLineFragmentOrigin]).size
         // Lower the centered readout by two points, clamping to avoid clipping
         // on shorter menu bars. The underlying status button still handles clicks.
         let y = max(0, (bounds.height - size.height) / 2 - 2)
-        text.draw(with: NSRect(x: 0, y: y, width: bounds.width, height: size.height),
+        text.draw(with: NSRect(x: 8, y: y, width: columnWidth, height: size.height),
                   options: [.usesLineFragmentOrigin])
+        let powerSize = powerText.size()
+        powerText.draw(at: NSPoint(x: 8 + columnWidth + 8,
+                                  y: max(0, (bounds.height - powerSize.height) / 2 - 2)))
     }
+}
+
+/// A bounded informational row: even unbroken helper errors must not resize the menu.
+@MainActor
+final class MenuErrorView: NSView {
+    static let width: CGFloat = 290
+
+    init(error: String) {
+        let label = NSTextField(wrappingLabelWithString: "Error: \(error)")
+        label.font = .menuFont(ofSize: 0)
+        label.textColor = .secondaryLabelColor
+        label.maximumNumberOfLines = 4
+        label.lineBreakMode = .byWordWrapping
+        label.cell?.truncatesLastVisibleLine = true
+        label.toolTip = error
+        label.setAccessibilityLabel("Error: \(error)")
+
+        let textWidth = Self.width - 40
+        let lineHeight = NSLayoutManager().defaultLineHeight(for: label.font!)
+        let textHeight = ceil(label.attributedStringValue.boundingRect(
+            with: NSSize(width: textWidth, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading]
+        ).height)
+        let height = min(max(textHeight, lineHeight), ceil(lineHeight * 4))
+        super.init(frame: NSRect(x: 0, y: 0, width: Self.width, height: height + 12))
+        label.frame = NSRect(x: 20, y: 6, width: textWidth, height: height)
+        addSubview(label)
+        toolTip = error
+    }
+
+    required init?(coder: NSCoder) { nil }
 }
 
 @MainActor
@@ -85,7 +123,7 @@ final class FanControlApplicationDelegate: NSObject, NSApplicationDelegate, NSMe
         menu.addItem(sensorSeparator)
         menu.addItem(requestedItem)
 
-        // Only the slider needs a custom menu-item view; everything else is native.
+        // Keep interactive actions native; the slider and bounded error text use custom views.
         let sliderItem = NSMenuItem()
         let sliderView = NSView(frame: NSRect(x: 0, y: 0, width: 290, height: 34))
         slider.frame = NSRect(x: 20, y: 6, width: 250, height: 22)
@@ -123,6 +161,11 @@ final class FanControlApplicationDelegate: NSObject, NSApplicationDelegate, NSMe
         // On multi-fan machines the compact label shows the fastest measured fan.
         let actualRPM = snapshot.fans.map(\.rpm).filter { $0.isFinite && $0 >= 0 }.max()
         let rpm = actualRPM.map { String(format: "%.0frpm", $0) } ?? "—rpm"
+        let power = snapshot.systemPowerWatts.map { String(format: "%.1fW", $0) } ?? "—W"
+        let powerTitle = NSAttributedString(string: power, attributes: [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .bold),
+            .foregroundColor: NSColor.labelColor
+        ])
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .center
         paragraph.minimumLineHeight = 10.5
@@ -135,10 +178,11 @@ final class FanControlApplicationDelegate: NSObject, NSApplicationDelegate, NSMe
         if let button = statusItem.button {
             button.image = nil
             button.title = ""
-            statusItem.length = ceil(title.size().width) + 16
+            statusItem.length = ceil(title.size().width) + ceil(powerTitle.size().width) + 24
             readout.frame = button.bounds
             readout.text = title
-            button.toolTip = model.error ?? "Hottest CPU: \(temperature); \(snapshot.fans.count > 1 ? "fastest fan" : "actual fan speed"): \(rpm)"
+            readout.powerText = powerTitle
+            button.toolTip = model.error ?? "Hottest CPU: \(temperature); \(snapshot.fans.count > 1 ? "fastest fan" : "actual fan speed"): \(rpm); system power: \(power)"
             button.setAccessibilityLabel(button.toolTip)
         }
 
@@ -187,22 +231,12 @@ final class FanControlApplicationDelegate: NSObject, NSApplicationDelegate, NSMe
         for item in errorItems { menu.removeItem(item) }
         errorItems.removeAll()
         guard let error = model.error, !error.isEmpty else { return }
-        // Wrap into disabled native rows rather than adding another custom view.
-        var lines = ["Error:"]
-        for word in error.split(whereSeparator: { $0.isWhitespace }) {
-            if lines[lines.count - 1].count + word.count + 1 > 55 {
-                lines.append(String(word))
-            } else {
-                lines[lines.count - 1] += " " + word
-            }
-        }
-        for line in lines {
-            let item = NSMenuItem(title: line, action: nil, keyEquivalent: "")
-            item.isEnabled = false
-            item.toolTip = error
-            menu.insertItem(item, at: menu.index(of: quitItem))
-            errorItems.append(item)
-        }
+        let item = NSMenuItem()
+        item.view = MenuErrorView(error: error)
+        item.isEnabled = false
+        item.toolTip = error
+        menu.insertItem(item, at: menu.index(of: quitItem))
+        errorItems.append(item)
     }
 
     @objc private func changeSpeed(_ sender: NSSlider) { model.sliderChanged(sender.doubleValue) }
