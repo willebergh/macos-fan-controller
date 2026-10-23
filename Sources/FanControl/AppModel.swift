@@ -7,6 +7,7 @@ import Security
 @MainActor
 final class AppModel: ObservableObject {
     @Published var snapshot = Snapshot()
+    @Published var cpuUtilization: Double?
     @Published var percentage = 50.0
     @Published var isManual = false
     @Published var busy = false
@@ -73,9 +74,11 @@ final class AppModel: ObservableObject {
                 }
                 // Keep measured RPM/temperature live even when a control request fails.
                 let value = try self.hardware.smc!.snapshot()
+                let cpuUtilization = self.hardware.cpuSampler.sample()
                 let failure = controlFailure
                 Task { @MainActor in
                     self.snapshot = value
+                    self.cpuUtilization = cpuUtilization
                     self.loading = false
                     self.reading = false
                     if let failure {
@@ -198,6 +201,8 @@ final class AppModel: ObservableObject {
 
 // All mutable hardware state is confined to AppModel's serial hardware queue.
 final class HardwareController: @unchecked Sendable {
+    // Accessed only on the owning controller's serial hardware queue.
+    let cpuSampler = CPUUsageSampler()
     var smc: SMC?
     let lease = UUID().uuidString
 

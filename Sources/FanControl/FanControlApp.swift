@@ -57,8 +57,10 @@ private final class StatusReadoutView: NSView {
         text.draw(with: NSRect(x: 8, y: y, width: columnWidth, height: size.height),
                   options: [.usesLineFragmentOrigin])
         let powerSize = powerText.size()
-        powerText.draw(at: NSPoint(x: 8 + columnWidth + 8,
-                                  y: max(0, (bounds.height - powerSize.height) / 2 - 2)))
+        powerText.draw(with: NSRect(x: 8 + columnWidth + 8,
+                                   y: max(0, (bounds.height - powerSize.height) / 2 - 2),
+                                   width: ceil(powerSize.width), height: powerSize.height),
+                       options: [.usesLineFragmentOrigin])
     }
 }
 
@@ -162,14 +164,16 @@ final class FanControlApplicationDelegate: NSObject, NSApplicationDelegate, NSMe
         let actualRPM = snapshot.fans.map(\.rpm).filter { $0.isFinite && $0 >= 0 }.max()
         let rpm = actualRPM.map { String(format: "%.0frpm", $0) } ?? "—rpm"
         let power = snapshot.systemPowerWatts.map { String(format: "%.1fW", $0) } ?? "—W"
-        let powerTitle = NSAttributedString(string: power, attributes: [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .bold),
-            .foregroundColor: NSColor.labelColor
-        ])
+        let cpu = model.cpuUtilization.map { String(format: "%.0f%%", $0) } ?? "—%"
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .center
         paragraph.minimumLineHeight = 10.5
         paragraph.maximumLineHeight = 10.5
+        let powerTitle = NSAttributedString(string: "\(cpu)\n\(power)", attributes: [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .bold),
+            .foregroundColor: NSColor.labelColor,
+            .paragraphStyle: paragraph
+        ])
         let title = NSAttributedString(string: "\(temperature)\n\(rpm)", attributes: [
             .font: NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .bold),
             .foregroundColor: NSColor.labelColor,
@@ -182,7 +186,7 @@ final class FanControlApplicationDelegate: NSObject, NSApplicationDelegate, NSMe
             readout.frame = button.bounds
             readout.text = title
             readout.powerText = powerTitle
-            button.toolTip = model.error ?? "Hottest CPU: \(temperature); \(snapshot.fans.count > 1 ? "fastest fan" : "actual fan speed"): \(rpm); system power: \(power)"
+            button.toolTip = model.error ?? "Hottest CPU: \(temperature); \(snapshot.fans.count > 1 ? "fastest fan" : "actual fan speed"): \(rpm); CPU utilization: \(cpu); system power: \(power)"
             button.setAccessibilityLabel(button.toolTip)
         }
 
