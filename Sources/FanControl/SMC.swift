@@ -203,7 +203,11 @@ final class SMC {
                 try? write(targetKey, value: target)
                 try enableManualMode(mode) {
                     let seed = try self.number(targetKey)
-                    guard seed >= fan.minimum, seed <= fan.maximum else {
+                    // A system-stopped fan (MacBooks at idle) reports Tg 0 and ignores
+                    // target writes until manual. Holding it stopped for the instant
+                    // before the target write cannot slow it; a spinning fan can't use 0.
+                    let stoppedSeed = seed == 0 && fan.rpm < fan.minimum / 2
+                    guard stoppedSeed || (seed >= fan.minimum && seed <= fan.maximum) else {
                         throw FanError("Cannot establish a safe starting target for fan \(fan.id + 1). No manual override was enabled.")
                     }
                 }

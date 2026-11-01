@@ -25,6 +25,7 @@ final class AppModel: ObservableObject {
     private var reading = false
     private var resetting = false
     private var manualActivity: NSObjectProtocol?
+    private var resumeAfterWake: Double?
 
     private func keepManualActivity() {
         if manualActivity == nil {
@@ -49,7 +50,33 @@ final class AppModel: ObservableObject {
         RunLoop.main.add(timer!, forMode: .common)
         RunLoop.main.add(timer!, forMode: .eventTracking)
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.systemDefault() }
+            Task { @MainActor in self?.prepareForSleep() }
+        }
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.resumeManualAfterWake() }
+        }
+    }
+
+    // The helper cannot heartbeat while asleep, so hand control back to the system
+    // before sleep (e.g. lid close) and re-apply the same manual setting on wake.
+    private func prepareForSleep() {
+        let resume = desiredManual ? committedPercentage : nil
+        systemDefault()
+        resumeAfterWake = resume
+    }
+
+    private func resumeManualAfterWake(attempt: Int = 0) {
+        guard let percent = resumeAfterWake else { return }
+        // Let SMC readings and the pre-sleep reset settle before taking ownership again.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            guard let self, self.resumeAfterWake == percent else { return }
+            if self.busy || self.snapshot.fans.isEmpty {
+                if attempt < 10 { self.resumeManualAfterWake(attempt: attempt + 1) }
+                return
+            }
+            self.resumeAfterWake = nil
+            self.percentage = percent
+            self.applyManual()
         }
     }
 
@@ -111,6 +138,7 @@ final class AppModel: ObservableObject {
     }
 
     func sliderChanged(_ value: Double) {
+        resumeAfterWake = nil
         percentage = value.rounded()
         responseMonitor = nil
         verifying = false
@@ -157,6 +185,7 @@ final class AppModel: ObservableObject {
 
     func systemDefault(quit: Bool = false, reason: String? = nil) {
         pending?.cancel()
+        resumeAfterWake = nil
         desiredManual = false
         endManualActivity()
         verifying = false

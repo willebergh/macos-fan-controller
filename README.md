@@ -103,7 +103,8 @@ claiming success. The app verifies actual RPM response, not just accepted target
 - A command is shown as waiting until measured RPM responds. An ignored request is
   detected after 10 seconds; a moving fan gets up to 30 seconds to settle. Failed
   response restores system control and shows requested versus measured RPM.
-- The app requests system control on its Quit button and before sleep.
+- The app requests system control on its Quit button and before sleep (e.g. lid close),
+  then re-applies the previous manual setting on wake.
 - Manual control holds an App Nap exemption while still allowing system sleep.
   Session keepalive never renews a manual-control lease by itself.
 - If the app disconnects or crashes, a helper-side watchdog attempts to restore

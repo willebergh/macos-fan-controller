@@ -40,6 +40,18 @@ final class ControlTests: XCTestCase {
         XCTAssertEqual(values["F0Md"]?.number, 0)
     }
 
+    func testStoppedFanWithZeroTargetCanBeTakenOver() throws {
+        var values = makeStore(target: 0)
+        values["F0Ac"] = float(0)
+        let smc = SMC(read: { key in guard let value = values[key] else { throw self.absent }; return value }, write: { key, bytes in
+            if key == "F0Tg", values["F0Md"]?.number == 0 { return }
+            values[key] = SMCValue(type: key == "F0Md" ? "ui8 " : "flt ", bytes: bytes)
+        })
+        try smc.setManual(percent: 50)
+        XCTAssertEqual(values["F0Md"]?.number, 1)
+        XCTAssertEqual(values["F0Tg"]?.number ?? 0, 2450, accuracy: 0.1)
+    }
+
     func testTargetWriteFailureAfterEnablingRollsBackToSystemMode() {
         var values = makeStore()
         let smc = SMC(read: { key in guard let value = values[key] else { throw self.absent }; return value }, write: { key, bytes in
