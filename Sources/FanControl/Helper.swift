@@ -1,6 +1,7 @@
 import Foundation
 import Darwin
 import SMCBridge
+import CryptoKit
 
 // No shell, file-writing or arbitrary SMC operations are exposed over this socket.
 // Only this login user's requests are accepted; the client verifies a root peer.
@@ -23,6 +24,7 @@ enum PrivilegedHelper {
     static func run(uid: uid_t) throws {
         guard geteuid() == 0, uid > 0 else { throw FanError("Helper requires administrator authorization and a non-root client.") }
         let smc = try SMC()
+        let digest = try executableDigest(Bundle.main.executableURL?.path ?? CommandLine.arguments[0])
         let server = fan_server(uid)
         guard server >= 0 else { throw FanError("Cannot start fan helper; another instance or stale socket may exist.") }
         defer { close(server); fan_remove_socket(uid) }
@@ -67,7 +69,7 @@ enum PrivilegedHelper {
                 let command = String(decoding: buffer.prefix(count), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
                 lastContact = now
                 do {
-                    if command == "ping" || command == "session 4" { reply = "OK" }
+                    if command == "ping" || command == "session \(digest)" { reply = "OK" }
                     else if command.hasPrefix("release ") {
                         let token = String(command.dropFirst(8))
                         guard UUID(uuidString: token) != nil else { throw FanError("Invalid lease.") }
@@ -122,6 +124,10 @@ enum HelperLifetime {
     static func shouldExit(manual: Bool, hasLiveClients: Bool, idleSeconds: TimeInterval) -> Bool {
         !manual && !hasLiveClients && idleSeconds > 60
     }
+}
+
+func executableDigest(_ path: String) throws -> String {
+    SHA256.hash(data: try Data(contentsOf: URL(fileURLWithPath: path))).map { String(format: "%02x", $0) }.joined()
 }
 
 func shellQuote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }

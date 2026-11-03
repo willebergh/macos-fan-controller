@@ -236,13 +236,14 @@ final class HardwareController: @unchecked Sendable {
     let lease = UUID().uuidString
 
     func authorize() throws {
-        if (try? PrivilegedHelper.request("session 4")) != nil { return }
-        // Replace older helpers to require current lease-release semantics and
-        // avoid retaining an old thermal cutoff after an app update.
+        let executable = Bundle.main.executableURL?.path ?? CommandLine.arguments[0]
+        let digest = try executableDigest(executable)
+        // Reuse only a helper running this exact binary. An app update must replace
+        // the old helper, which otherwise keeps running outdated control logic.
+        if (try? PrivilegedHelper.request("session \(digest)")) != nil { return }
         if (try? PrivilegedHelper.request("ping")) != nil {
             _ = try PrivilegedHelper.request("quit")
         }
-        let executable = Bundle.main.executableURL?.path ?? CommandLine.arguments[0]
         // Stage a private root-owned copy and verify its bytes against the running
         // app's digest. Never execute a replaceable user-writable path as root.
         var runningCode: SecCode?
@@ -253,8 +254,6 @@ final class HardwareController: @unchecked Sendable {
             throw FanError("Cannot verify this app's code identity. Rebuild and run the signed app bundle.")
         }
         let cdhash = identity.map { String(format: "%02x", $0) }.joined()
-        let digest = SHA256.hash(data: try Data(contentsOf: URL(fileURLWithPath: executable)))
-            .map { String(format: "%02x", $0) }.joined()
         guard Bundle.main.bundleURL.pathExtension == "app" else { throw FanError("Run the built FanControl.app to authorize fan control.") }
         let contents = Bundle.main.bundleURL.appendingPathComponent("Contents").path
         let command = """
